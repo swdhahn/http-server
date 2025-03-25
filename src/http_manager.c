@@ -1,5 +1,7 @@
 #include "http_manager.h"
 
+#include <dirent.h>
+
 void client_connection_loop(struct http_server* server) {
 	while (1) {
 		struct sockaddr_in cli;
@@ -8,9 +10,9 @@ void client_connection_loop(struct http_server* server) {
 		int connfd = accept(server->sockfd, (struct sockaddr*)&cli, &len);
 
 		if (connfd < 0) {
-			printf("server accept failed: %s\n", strerror(errno));
+			printf("Server accept failed: %s\n", strerror(errno));
 		} else {
-			printf("server accept the client...\n");
+			printf("Server accepted a client...\n");
 		}
 		// here we can add async
 		client_connection(server, connfd, cli, len);
@@ -31,7 +33,7 @@ void client_connection(struct http_server* server, int connfd,
 		handle_request(server, read_buff, write_buff, &response_size);
 
 		ret = write(connfd, write_buff, response_size);
-		printf("Response Size: %d\n%s\n\n", (int)response_size, write_buff);
+		// printf("Response Size: %d\n%s\n\n", (int)response_size, write_buff);
 
 		if (ret <= 0) {
 			// break;
@@ -40,7 +42,7 @@ void client_connection(struct http_server* server, int connfd,
 		// break;
 	}
 	//}
-	printf("Client Socket closed...\n");
+	// printf("Client Socket closed...\n");
 	close(connfd);
 	free(write_buff);
 }
@@ -66,7 +68,7 @@ void handle_request(struct http_server* server, const char* request,
 	}
 	char url[2000];
 	parse_url(request, 4, url);
-	// printf("Request URL: %s\n", url);
+	printf("Request URL: %s\n", url);
 
 	printf("Request data:%s;method:%d;\n", url, method);
 	for (int i = 0; i < server->requests_count; i++) {
@@ -74,7 +76,12 @@ void handle_request(struct http_server* server, const char* request,
 			   server->requests[i].method);
 		if (server->requests[i].method == method &&
 			strcmp(url, server->requests[i].url) == 0) {
-			server->requests[i].req(request, response, response_size);
+			if (server->requests[i].response_size != 0) {
+				strcpy(response, server->requests[i].response);
+				*response_size = server->requests[i].response_size;
+			} else {
+				server->requests[i].req(request, response, response_size);
+			}
 			return;
 		}
 	}
@@ -84,6 +91,55 @@ void handle_request(struct http_server* server, const char* request,
 	char buf[] = "HTTP/1.1 404 Not Found\nContent-Length: 0";
 	strcpy(response, buf);
 	*response_size = sizeof(buf);
+}
+
+void add_request_handle_file(struct http_server* server, const char* file_path,
+							 const char* url, unsigned int method) {
+	switch (method) {
+		case METHOD_GET:
+		case METHOD_POST:
+			break;
+		default:
+			printf(
+				"You did not specify a supported method for add_request_handle "
+				"method call\n");
+	}
+
+	// Creating more space for this request
+	// This is slow but will be the perfect amount of memory
+	// Not ideal, but was faster to implement
+	server->requests_count++;
+	struct http_request_data* t_requests = malloc(
+		server->requests_count *
+		sizeof(struct http_request_data));	// Yes this is a memory leak,
+											// however, this should stay alive
+											// until the program closes. And
+											// there are only a limited number
+											// of files, so it should be fine.
+	memcpy(t_requests, server->requests,
+		   sizeof(struct http_request_data) * (server->requests_count - 1));
+	t_requests[server->requests_count - 1].method = method;
+	t_requests[server->requests_count - 1].req = NULL;
+	strcpy(t_requests[server->requests_count - 1].url,
+		   url);  // url is already allocated so just strcpy
+
+	char buf[] =
+		"HTTP/1.1 200 OK\nContent-Type: text/html; "
+		"charset=utf-8\nContent-Length: ";
+
+	char* data = NULL;
+	unsigned int size;
+	read_file(file_path, NULL, &size);	// get size first
+	data = malloc(strlen(buf) + (floor(log10((double)size)) + 1) + 2 +
+				  size);  // len of buf + digits of size + 2 for \n and the size
+						  // of the content
+	sprintf(data, "%s%d\n\n", buf, size);
+	read_file(file_path, data + strlen(data), &size);
+	t_requests[server->requests_count - 1].response_size = strlen(data);
+	t_requests[server->requests_count - 1].response = data;
+
+	free(server->requests);
+	server->requests = t_requests;
 }
 
 void add_request_handle(struct http_server* server, request_func func,
@@ -109,9 +165,41 @@ void add_request_handle(struct http_server* server, request_func func,
 	t_requests[server->requests_count - 1].req = func;
 	strcpy(t_requests[server->requests_count - 1].url,
 		   url);  // url is already allocated so just strcpy
+	t_requests[server->requests_count - 1].response_size = 0;
+	t_requests[server->requests_count - 1].response = NULL;
 
 	free(server->requests);
 	server->requests = t_requests;
+}
+
+// TODO: Fix/finish
+void load_server_files_from_root(const char* path) {
+	static char* root_path = NULL;
+	int root_path_flag = 0;
+
+	if (root_path == NULL) {
+		root_path_flag = 1;
+		root_path = malloc(strlen(path));
+		strcpy(root_path, path);
+	}
+	// idk if the above code works haha
+	DIR* dir = opendir(path);
+	errno = 0;
+	printf("%s\n", root_path);
+
+	struct dirent* d = readdir(dir);
+	while (d != NULL) {
+		if (d->d_type == DT_DIR) {	// use lstat(2) instead
+		}
+
+		printf("%s\n", d->d_name);
+		d = readdir(dir);
+	}
+	printf("Error: %s\n", strerror(errno));
+
+	if (root_path_flag) {
+		free(root_path);
+	}
 }
 
 struct http_server* initialize_server(unsigned short int port,
