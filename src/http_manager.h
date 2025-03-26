@@ -2,6 +2,7 @@
 #define HTTP_MANAGER_H
 
 #include <errno.h>
+#include <fcntl.h>
 #include <math.h>
 #include <netdb.h>
 #include <netinet/in.h>
@@ -10,12 +11,14 @@
 #include <string.h>
 #include <strings.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include "file_tree.h"
 
 #define MAX_RESPONSE_SIZE \
 	1024 * 1024	 // 1 MB, so we can only send 1 MB of data per request
+#define MAX_URL_SIZE 2000
 
 #define METHOD_GET 100
 #define METHOD_POST 101
@@ -51,7 +54,7 @@ void add_request_handle_file(struct http_server* server, const char* file_path,
 							 const char* url, unsigned int method);
 void add_request_handle(struct http_server* server, request_func func,
 						const char* url, unsigned int method);
-void load_server_files_from_root(const char* path);
+void load_server_files_from_root(struct http_server* server, const char* path);
 
 struct http_server* initialize_server(unsigned short int port,
 									  unsigned int maxClients);

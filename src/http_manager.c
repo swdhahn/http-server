@@ -1,6 +1,7 @@
 #include "http_manager.h"
 
 #include <dirent.h>
+#include <string.h>
 
 void client_connection_loop(struct http_server* server) {
 	while (1) {
@@ -66,14 +67,11 @@ void handle_request(struct http_server* server, const char* request,
 	} else if (strncmp(request, "POST", 4) == 0) {
 		method = METHOD_POST;
 	}
-	char url[2000];
+	char url[MAX_URL_SIZE];
 	parse_url(request, 4, url);
 	printf("Request URL: %s\n", url);
 
-	printf("Request data:%s;method:%d;\n", url, method);
 	for (int i = 0; i < server->requests_count; i++) {
-		printf("Server Options:%s;method:%d;\n", server->requests[i].url,
-			   server->requests[i].method);
 		if (server->requests[i].method == method &&
 			strcmp(url, server->requests[i].url) == 0) {
 			if (server->requests[i].response_size != 0) {
@@ -85,8 +83,7 @@ void handle_request(struct http_server* server, const char* request,
 			return;
 		}
 	}
-	printf(
-		"I think we send back 404 error here? Maybe only for GET requests?\n");
+	// TODO: Handle 404 error requests
 	// send back 404 error page not found?
 	char buf[] = "HTTP/1.1 404 Not Found\nContent-Length: 0";
 	strcpy(response, buf);
@@ -103,6 +100,19 @@ void add_request_handle_file(struct http_server* server, const char* file_path,
 			printf(
 				"You did not specify a supported method for add_request_handle "
 				"method call\n");
+	}
+	char* extension = strrchr(file_path, '.');
+	char content_type[40];
+	if (strcmp(extension, ".html") == 0) {
+		strcpy(content_type, "text/html");
+	} else if (strcmp(extension, ".css") == 0) {
+		strcpy(content_type, "text/css");
+	} else if (strcmp(extension, ".js") == 0) {
+		strcpy(content_type, "text/javascript");
+	} else {
+		printf("Unrecognized format: %s defaulting to html file type.\n",
+			   file_path);
+		strcpy(content_type, "text/html");
 	}
 
 	// Creating more space for this request
@@ -124,16 +134,19 @@ void add_request_handle_file(struct http_server* server, const char* file_path,
 		   url);  // url is already allocated so just strcpy
 
 	char buf[] =
-		"HTTP/1.1 200 OK\nContent-Type: text/html; "
-		"charset=utf-8\nContent-Length: ";
+		"HTTP/1.1 200 OK\nContent-Type: "
+		"; charset=utf-8\nContent-Length: ";
 
 	char* data = NULL;
 	unsigned int size;
 	read_file(file_path, NULL, &size);	// get size first
-	data = malloc(strlen(buf) + (floor(log10((double)size)) + 1) + 2 +
+	data = malloc(strlen(buf) + strlen(content_type) +
+				  (floor(log10((double)size)) + 1) + 2 +
 				  size);  // len of buf + digits of size + 2 for \n and the size
 						  // of the content
-	sprintf(data, "%s%d\n\n", buf, size);
+	sprintf(data, "%s%s%s%d\n\n",
+			"HTTP/1.1 200 OK\nContent-Type: ", content_type,
+			"; charset=utf-8\nContent-Length: ", size);
 	read_file(file_path, data + strlen(data), &size);
 	t_requests[server->requests_count - 1].response_size = strlen(data);
 	t_requests[server->requests_count - 1].response = data;
@@ -173,7 +186,11 @@ void add_request_handle(struct http_server* server, request_func func,
 }
 
 // TODO: Fix/finish
-void load_server_files_from_root(const char* path) {
+/**
+ * Will cause race condition if used with different threads.
+ *
+ */
+void load_server_files_from_root(struct http_server* server, const char* path) {
 	static char* root_path = NULL;
 	int root_path_flag = 0;
 
@@ -182,23 +199,51 @@ void load_server_files_from_root(const char* path) {
 		root_path = malloc(strlen(path));
 		strcpy(root_path, path);
 	}
-	// idk if the above code works haha
 	DIR* dir = opendir(path);
 	errno = 0;
-	printf("%s\n", root_path);
 
 	struct dirent* d = readdir(dir);
+	char c_url[MAX_URL_SIZE];
+	strcpy(c_url, path);
+	printf("Path: %s and %s\n", c_url, root_path);
+	int len = strlen(path);
+	int root_len = strlen(root_path);
 	while (d != NULL) {
-		if (d->d_type == DT_DIR) {	// use lstat(2) instead
+		strcpy(&c_url[len], d->d_name);
+		struct stat statbuf;
+		int v = stat(c_url, &statbuf);
+		int ft_mode = statbuf.st_mode;
+
+		if ((ft_mode & S_IFMT) == S_IFDIR) {
+			if (strcmp(d->d_name, ".") == 0 || strcmp(d->d_name, "..") == 0) {
+				// This is current and prev dir, we dont care for it
+				d = readdir(dir);
+				continue;
+			}
+			strcat(c_url, "/");
+			load_server_files_from_root(server, c_url);
+		} else if ((ft_mode & S_IFMT) ==
+				   S_IFREG) {  // this handles regular files
+			printf("Adding file request: %s on %s\n", c_url,
+				   &c_url[root_len - 1]);
+			add_request_handle_file(server, c_url, &c_url[root_len - 1],
+									METHOD_GET);
+		} else {  // prints a unsupported statement for non directories or
+				  // regular files
+			printf(
+				"The directory contains something this program doesn't "
+				"support: %s\n",
+				c_url);
 		}
 
-		printf("%s\n", d->d_name);
 		d = readdir(dir);
 	}
+	closedir(dir);
 	printf("Error: %s\n", strerror(errno));
 
 	if (root_path_flag) {
 		free(root_path);
+		root_path = NULL;
 	}
 }
 
